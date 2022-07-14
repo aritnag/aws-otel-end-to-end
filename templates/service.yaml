@@ -1,0 +1,221 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+
+  AppName:
+    Type: String
+
+  AppPort:
+    Type: Number
+
+  VpcId:
+    Type: String
+
+  Cluster:
+    Type: String
+
+  DesiredCount:
+    Type: Number
+    Default: 2
+
+  TargetGroup:
+    Type: String
+
+  SourceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup::Id
+
+  Subnets:
+    Type: List<AWS::EC2::Subnet::Id>
+
+  OtelDomain:
+    Type: String
+
+
+Resources:
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${AWS::StackName}-alb
+      SecurityGroupIngress:
+        - SourceSecurityGroupId: !Ref SourceSecurityGroup
+          IpProtocol: TCP
+          FromPort: !Ref AppPort
+          ToPort: !Ref AppPort
+      VpcId: !Ref VpcId
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      Policies:
+        - PolicyName: aritra-otel-service
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - 
+                Effect: "Allow"
+                Action: 
+                  - dynamodb:BatchGetItem
+                  - dynamodb:BatchWriteItem
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Scan
+                  - dynamodb:Query
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteTable
+                  - dynamodb:CreateTable
+                  - dynamodb:DescribeTable
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateTable
+                  - dynamodb:GetRecords
+                Resource:
+                  - arn:aws:dynamodb:eu-west-1:1234567890:table/S3Tableslist
+                  - arn:aws:dynamodb:eu-west-1:1234567890:table/S3Tableslist/index/*
+                  - arn:aws:dynamodb:eu-west-1:1234567890:table/S3Tableslist/stream/*
+              - 
+                Effect: "Allow"
+                Action: 
+                  - dynamodb:ListTables
+                Resource: "*"
+              - 
+                Effect: "Allow"
+                Action: 
+                  - s3:*
+                Resource: "*"  
+
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+        - arn:aws:iam::aws:policy/AmazonPrometheusRemoteWriteAccess
+
+  TaskServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      Policies:
+        - PolicyName: aritra-otel-service-task
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - 
+                Effect: "Allow"
+                Action: 
+                  - dynamodb:BatchGetItem
+                  - dynamodb:BatchWriteItem
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Scan
+                  - dynamodb:Query
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteTable
+                  - dynamodb:CreateTable
+                  - dynamodb:DescribeTable
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateTable
+                  - dynamodb:GetRecords
+                Resource:
+                  - arn:aws:dynamodb:eu-west-1:1234567890:table/S3Tableslist
+                  - arn:aws:dynamodb:eu-west-1:1234567890:table/S3Tableslist/index/*
+                  - arn:aws:dynamodb:eu-west-1:1234567890:table/S3Tableslist/stream/*
+              - 
+                Effect: "Allow"
+                Action: 
+                  - dynamodb:ListTables
+                Resource: "*"
+              - 
+                Effect: "Allow"
+                Action: 
+                  - s3:*
+                Resource: "*"  
+
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+        - arn:aws:iam::aws:policy/AmazonPrometheusRemoteWriteAccess
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${AppName}
+      RetentionInDays: 14
+
+  FargateService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub ${AppName}-service-${AWS::StackName}
+      Cluster: !Ref Cluster
+      DesiredCount: !Ref DesiredCount
+      TaskDefinition: !Ref TaskDefinition
+      LaunchType: FARGATE
+      PlatformVersion: 1.4.0
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - !Ref SecurityGroup
+          Subnets: !Ref Subnets
+      HealthCheckGracePeriodSeconds: 250
+      LoadBalancers:
+        - ContainerName: !Ref AppName
+          ContainerPort: !Ref AppPort
+          TargetGroupArn: !Ref TargetGroup
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${AppName}-taskdef-${AWS::StackName}
+      RequiresCompatibilities:
+      - FARGATE
+      Memory: 512
+      Cpu: 256                  
+      NetworkMode: awsvpc
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskServiceRole.Arn
+      ContainerDefinitions:
+        - Name: !Ref AppName
+          Image: 1234567890.dkr.ecr.eu-west-1.amazonaws.com/aritra-test-otel-service:latest # Image created using DockerFile
+          Essential: true
+          Memory: 512
+          HealthCheck:
+            Command: [ "CMD-SHELL", "curl -f http://localhost:8080/api/healthcheck || exit 1" ]
+            Interval: 30
+            Retries: 5
+            Timeout: 10
+            StartPeriod: 200
+          PortMappings:
+            - ContainerPort: !Ref AppPort
+          Environment:
+            - Name: OTEL_EXPORTER_OTLP_ENDPOINT
+              Value: !Sub 'http://${OtelDomain}:4317'
+            - Name: OTEL_RESOURCE_ATTRIBUTES
+              Value: !Sub service.name=${AppName},service.namespace=${AppName}
+            - Name: OTEL_IMR_EXPORT_INTERVAL
+              Value: 10000
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-region: !Ref AWS::Region
+              awslogs-group: !Ref LogGroup
+              awslogs-stream-prefix: ecs
+
+
+Outputs:
+  Service:
+    Value: !Ref FargateService
